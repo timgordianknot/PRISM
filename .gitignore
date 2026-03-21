@@ -1,3 +1,6 @@
+# Local runtime data (never commit household or quarantine JSON)
+data/
+
 .env
 *.key
 *.pem
