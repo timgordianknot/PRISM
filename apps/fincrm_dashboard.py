@@ -11,6 +11,8 @@ from __future__ import annotations
 import re
 import uuid
 import json
+import csv
+from io import StringIO
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -310,29 +312,31 @@ def to_csv_bytes(rows: list[dict[str, Any]]) -> bytes:
     if not rows:
         return b""
     headers = list(rows[0].keys())
-    lines = [",".join(headers)]
+    output = StringIO()
+    writer = csv.DictWriter(output, fieldnames=headers, lineterminator="\n")
+    writer.writeheader()
     for row in rows:
-        fields: list[str] = []
-        for header in headers:
-            value = str(row.get(header, ""))
-            escaped = value.replace('"', '""')
-            if "," in escaped or '"' in escaped:
-                escaped = f'"{escaped}"'
-            fields.append(escaped)
-        lines.append(",".join(fields))
-    return ("\n".join(lines) + "\n").encode("utf-8")
+        writer.writerow({k: row.get(k, "") for k in headers})
+    return output.getvalue().encode("utf-8")
 
 
 def parse_csv_text(csv_text: str) -> list[dict[str, str]]:
-    lines = [line.strip() for line in csv_text.splitlines() if line.strip()]
-    if not lines:
+    if not csv_text.strip():
         return []
-    headers = [h.strip() for h in lines[0].split(",")]
+
+    reader = csv.DictReader(StringIO(csv_text))
+    if reader.fieldnames is None:
+        return []
+
+    normalized_headers = [str(h).strip() if h is not None else "" for h in reader.fieldnames]
     rows: list[dict[str, str]] = []
-    for line in lines[1:]:
-        values = [v.strip() for v in line.split(",")]
-        padded = values + [""] * (len(headers) - len(values))
-        rows.append(dict(zip(headers, padded)))
+    for row in reader:
+        parsed: dict[str, str] = {}
+        for original_header, normalized_header in zip(reader.fieldnames, normalized_headers):
+            key = normalized_header or ""
+            value = row.get(original_header, "")
+            parsed[key] = "" if value is None else str(value).strip()
+        rows.append(parsed)
     return rows
 
 
