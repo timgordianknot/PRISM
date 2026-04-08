@@ -472,15 +472,22 @@ def render_overview(data: dict[str, list[dict[str, Any]]]) -> None:
     contacts = data["contacts"]
     tasks = data["tasks"]
 
-    revenue = sum(
-        (amt := _safe_float(t.get("amount"))) for t in transactions if (amt is not None and amt > 0)
-    )
+    revenue = 0.0
+    for t in transactions:
+        amt = _safe_float(t.get("amount"))
+        if amt is not None and amt > 0:
+            revenue += amt
+
     expenses = sum(
         (-amt) for t in transactions if (amt := _safe_float(t.get("amount"))) is not None and amt < 0
     )
-    pipeline = sum(
-        (val := _safe_float(d.get("value"))) for d in deals if d.get("stage") != "Won" and (val is not None)
-    )
+
+    pipeline = 0.0
+    for d in deals:
+        val = _safe_float(d.get("value"))
+        if d.get("stage") != "Won" and val is not None:
+            pipeline += val
+
     open_tasks = sum(1 for t in tasks if _parse_bool(t.get("done")) is False or (t.get("done") is None))
     active_contacts = sum(1 for c in contacts if c.get("status") == "Active")
 
