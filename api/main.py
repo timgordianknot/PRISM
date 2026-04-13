@@ -48,7 +48,29 @@ def ensure_data_file() -> None:
 
 def read_data() -> dict[str, list[dict[str, Any]]]:
     ensure_data_file()
-    return json.loads(DATA_PATH.read_text(encoding="utf-8"))
+    try:
+        parsed = json.loads(DATA_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        fallback = default_data()
+        write_data(fallback)
+        return fallback
+
+    if not isinstance(parsed, dict):
+        fallback = default_data()
+        write_data(fallback)
+        return fallback
+
+    normalized: dict[str, list[dict[str, Any]]] = {
+        "transactions": [],
+        "contacts": [],
+        "deals": [],
+        "tasks": [],
+    }
+    for key in normalized.keys():
+        value = parsed.get(key)
+        if isinstance(value, list):
+            normalized[key] = [row for row in value if isinstance(row, dict)]
+    return normalized
 
 
 def write_data(data: dict[str, list[dict[str, Any]]]) -> None:
@@ -141,11 +163,13 @@ def quarantine_append(
     role: str = Depends(get_admin_role),
 ) -> dict[str, str]:
     quarantine = read_quarantine()
+    appended_count = 0
     for item in payload.items:
         if isinstance(item, dict):
             quarantine.append(item)
+            appended_count += 1
     write_quarantine(quarantine)
-    return {"status": "saved", "count": str(len(payload.items))}
+    return {"status": "saved", "count": str(appended_count)}
 
 
 @app.delete("/quarantine/{item_id}")

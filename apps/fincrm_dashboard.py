@@ -298,8 +298,22 @@ def load_local_data() -> dict[str, list[dict[str, Any]]]:
         save_local_data(data)
         return _normalize_data(data)
 
-    with DATA_PATH.open("r", encoding="utf-8") as f:
-        return _normalize_data(json.load(f))
+    try:
+        with DATA_PATH.open("r", encoding="utf-8") as f:
+            parsed = json.load(f)
+        if not isinstance(parsed, dict):
+            raise ValueError("Main data JSON must be an object at the root.")
+        return _normalize_data(parsed)
+    except Exception:
+        # Preserve unreadable content for manual recovery, then heal with mock defaults.
+        try:
+            backup_path = DATA_PATH.with_name(f"{DATA_PATH.stem}.corrupt.json")
+            backup_path.write_text(DATA_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+        except Exception:
+            pass
+        data = get_mock_data()
+        save_local_data(data)
+        return _normalize_data(data)
 
 
 def save_local_data(data: dict[str, list[dict[str, Any]]]) -> None:
