@@ -8,3 +8,5 @@ data/
 *.gsheet
 *.gdoc
 *.gslides
+__pycache__/
+*.py[cod]
