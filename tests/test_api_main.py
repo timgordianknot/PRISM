@@ -59,3 +59,56 @@ def test_auth_matrix_read_vs_admin(monkeypatch):
 
     # Admin token can write
     assert client.put("/data", json=payload, headers={"X-PRISM-TOKEN": "admin-456"}).status_code == 200
+
+
+def test_quarantine_restore_moves_row_into_data_and_removes_item(tmp_path, monkeypatch):
+    data_file = tmp_path / "fincrm_data.json"
+    quarantine_file = tmp_path / "fincrm_quarantine.json"
+    data_file.write_text(json.dumps(main.default_data(), indent=2), encoding="utf-8")
+    quarantine_item = {
+        "id": "q-1",
+        "section": "tasks",
+        "row": {
+            "task": "Recovered task",
+            "owner": "QA",
+            "due": "2026-04-01",
+            "priority": "Medium",
+            "done": False,
+        },
+    }
+    quarantine_file.write_text(json.dumps([quarantine_item], indent=2), encoding="utf-8")
+
+    monkeypatch.setattr(main, "DATA_PATH", data_file)
+    monkeypatch.setattr(main, "QUARANTINE_PATH", quarantine_file)
+    _set_env(monkeypatch, read_token=None, admin_token=None)
+
+    client = TestClient(main.app)
+    restore = client.post("/quarantine/q-1/restore")
+    assert restore.status_code == 200
+    assert restore.json()["status"] == "restored"
+
+    updated_data = json.loads(data_file.read_text(encoding="utf-8"))
+    assert any(row.get("task") == "Recovered task" for row in updated_data["tasks"])
+
+    updated_quarantine = json.loads(quarantine_file.read_text(encoding="utf-8"))
+    assert updated_quarantine == []
+
+
+def test_quarantine_delete_removes_item_by_id(tmp_path, monkeypatch):
+    quarantine_file = tmp_path / "fincrm_quarantine.json"
+    items = [
+        {"id": "q-keep", "section": "tasks", "row": {"task": "Keep me"}},
+        {"id": "q-drop", "section": "tasks", "row": {"task": "Drop me"}},
+    ]
+    quarantine_file.write_text(json.dumps(items, indent=2), encoding="utf-8")
+    monkeypatch.setattr(main, "QUARANTINE_PATH", quarantine_file)
+    _set_env(monkeypatch, read_token=None, admin_token=None)
+
+    client = TestClient(main.app)
+    response = client.delete("/quarantine/q-drop")
+    assert response.status_code == 200
+    assert response.json()["status"] == "deleted"
+
+    updated = json.loads(quarantine_file.read_text(encoding="utf-8"))
+    assert len(updated) == 1
+    assert updated[0]["id"] == "q-keep"
