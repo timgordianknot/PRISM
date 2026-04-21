@@ -11,6 +11,8 @@ from __future__ import annotations
 import re
 import uuid
 import json
+import csv
+from io import StringIO
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -296,8 +298,22 @@ def load_local_data() -> dict[str, list[dict[str, Any]]]:
         save_local_data(data)
         return _normalize_data(data)
 
-    with DATA_PATH.open("r", encoding="utf-8") as f:
-        return _normalize_data(json.load(f))
+    try:
+        with DATA_PATH.open("r", encoding="utf-8") as f:
+            parsed = json.load(f)
+        if not isinstance(parsed, dict):
+            raise ValueError("Main data JSON must be an object at the root.")
+        return _normalize_data(parsed)
+    except Exception:
+        # Preserve unreadable content for manual recovery, then heal with mock defaults.
+        try:
+            backup_path = DATA_PATH.with_name(f"{DATA_PATH.stem}.corrupt.json")
+            backup_path.write_text(DATA_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+        except Exception:
+            pass
+        data = get_mock_data()
+        save_local_data(data)
+        return _normalize_data(data)
 
 
 def save_local_data(data: dict[str, list[dict[str, Any]]]) -> None:
@@ -310,29 +326,31 @@ def to_csv_bytes(rows: list[dict[str, Any]]) -> bytes:
     if not rows:
         return b""
     headers = list(rows[0].keys())
-    lines = [",".join(headers)]
+    output = StringIO()
+    writer = csv.DictWriter(output, fieldnames=headers, lineterminator="\n")
+    writer.writeheader()
     for row in rows:
-        fields: list[str] = []
-        for header in headers:
-            value = str(row.get(header, ""))
-            escaped = value.replace('"', '""')
-            if "," in escaped or '"' in escaped:
-                escaped = f'"{escaped}"'
-            fields.append(escaped)
-        lines.append(",".join(fields))
-    return ("\n".join(lines) + "\n").encode("utf-8")
+        writer.writerow({k: row.get(k, "") for k in headers})
+    return output.getvalue().encode("utf-8")
 
 
 def parse_csv_text(csv_text: str) -> list[dict[str, str]]:
-    lines = [line.strip() for line in csv_text.splitlines() if line.strip()]
-    if not lines:
+    if not csv_text.strip():
         return []
-    headers = [h.strip() for h in lines[0].split(",")]
+
+    reader = csv.DictReader(StringIO(csv_text))
+    if reader.fieldnames is None:
+        return []
+
+    normalized_headers = [str(h).strip() if h is not None else "" for h in reader.fieldnames]
     rows: list[dict[str, str]] = []
-    for line in lines[1:]:
-        values = [v.strip() for v in line.split(",")]
-        padded = values + [""] * (len(headers) - len(values))
-        rows.append(dict(zip(headers, padded)))
+    for row in reader:
+        parsed: dict[str, str] = {}
+        for original_header, normalized_header in zip(reader.fieldnames, normalized_headers):
+            key = normalized_header or ""
+            value = row.get(original_header, "")
+            parsed[key] = "" if value is None else str(value).strip()
+        rows.append(parsed)
     return rows
 
 
@@ -472,15 +490,22 @@ def render_overview(data: dict[str, list[dict[str, Any]]]) -> None:
     contacts = data["contacts"]
     tasks = data["tasks"]
 
-    revenue = sum(
-        (amt := _safe_float(t.get("amount"))) for t in transactions if (amt is not None and amt > 0)
-    )
+    revenue = 0.0
+    for t in transactions:
+        amt = _safe_float(t.get("amount"))
+        if amt is not None and amt > 0:
+            revenue += amt
+
     expenses = sum(
         (-amt) for t in transactions if (amt := _safe_float(t.get("amount"))) is not None and amt < 0
     )
-    pipeline = sum(
-        (val := _safe_float(d.get("value"))) for d in deals if d.get("stage") != "Won" and (val is not None)
-    )
+
+    pipeline = 0.0
+    for d in deals:
+        val = _safe_float(d.get("value"))
+        if d.get("stage") != "Won" and val is not None:
+            pipeline += val
+
     open_tasks = sum(1 for t in tasks if _parse_bool(t.get("done")) is False or (t.get("done") is None))
     active_contacts = sum(1 for c in contacts if c.get("status") == "Active")
 
