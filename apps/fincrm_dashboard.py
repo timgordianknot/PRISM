@@ -517,13 +517,13 @@ def render_overview(data: dict[str, list[dict[str, Any]]]) -> None:
     c5.metric("Active Contacts", active_contacts)
 
     st.subheader("Quick Snapshot")
-    st.dataframe(transactions, use_container_width=True, hide_index=True)
+    st.dataframe(transactions, width="stretch", hide_index=True)
 
 
 def render_transactions(data: dict[str, list[dict[str, Any]]]) -> None:
     st.subheader("Transactions")
     st.caption("Track cash in and cash out. Current values are mock data.")
-    st.dataframe(data["transactions"], use_container_width=True, hide_index=True)
+    st.dataframe(data["transactions"], width="stretch", hide_index=True)
 
     with st.expander("Add mock transaction"):
         with st.form("add_tx"):
@@ -552,7 +552,7 @@ def render_transactions(data: dict[str, list[dict[str, Any]]]) -> None:
 
 def render_contacts(data: dict[str, list[dict[str, Any]]]) -> None:
     st.subheader("Contacts")
-    st.dataframe(data["contacts"], use_container_width=True, hide_index=True)
+    st.dataframe(data["contacts"], width="stretch", hide_index=True)
 
     with st.expander("Add mock contact"):
         with st.form("add_contact"):
@@ -581,7 +581,7 @@ def render_contacts(data: dict[str, list[dict[str, Any]]]) -> None:
 
 def render_deals(data: dict[str, list[dict[str, Any]]]) -> None:
     st.subheader("Deals")
-    st.dataframe(data["deals"], use_container_width=True, hide_index=True)
+    st.dataframe(data["deals"], width="stretch", hide_index=True)
 
     stage_filter = st.multiselect(
         "Filter stages",
@@ -590,7 +590,7 @@ def render_deals(data: dict[str, list[dict[str, Any]]]) -> None:
     )
     filtered = [d for d in data["deals"] if d.get("stage") in stage_filter]
     st.write(f"Showing {len(filtered)} deal(s)")
-    st.dataframe(filtered, use_container_width=True, hide_index=True)
+    st.dataframe(filtered, width="stretch", hide_index=True)
     render_data_tools("Deals", data, numeric_keys=["value"])
 
 
@@ -598,7 +598,7 @@ def render_tasks(data: dict[str, list[dict[str, Any]]]) -> None:
     st.subheader("Tasks")
     edited = st.data_editor(
         data["tasks"],
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         column_config={
             "done": st.column_config.CheckboxColumn("Done"),
@@ -667,7 +667,7 @@ def render_quarantine_page(mock_data: dict[str, list[dict[str, Any]]]) -> None:
                 "reasons": "; ".join(reasons[:2]) + ("..." if len(reasons) > 2 else ""),
             }
         )
-    st.dataframe(preview_rows, use_container_width=True, hide_index=True)
+    st.dataframe(preview_rows, width="stretch", hide_index=True)
 
     selected_id = st.selectbox("Pick an item to restore", [it["id"] for it in items])
     selected = next((it for it in items if it["id"] == selected_id), None)
