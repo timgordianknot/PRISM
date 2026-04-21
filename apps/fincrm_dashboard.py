@@ -36,6 +36,13 @@ ALLOWED_TASK_PRIORITIES = ["Low", "Medium", "High"]
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
+def _atomic_write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f"{path.name}.tmp")
+    temp_path.write_text(content, encoding="utf-8")
+    temp_path.replace(path)
+
+
 def api_headers() -> dict[str, str]:
     token = st.session_state.get("api_token") if hasattr(st, "session_state") else None
     if token:
@@ -218,7 +225,7 @@ def validate_row(section_key: str, row: dict[str, Any]) -> tuple[dict[str, Any] 
 def ensure_quarantine_dir_and_file() -> None:
     QUARANTINE_PATH.parent.mkdir(parents=True, exist_ok=True)
     if not QUARANTINE_PATH.exists():
-        QUARANTINE_PATH.write_text("[]", encoding="utf-8")
+        _atomic_write_text(QUARANTINE_PATH, "[]")
 
 
 def load_local_quarantine() -> list[dict[str, Any]]:
@@ -234,7 +241,7 @@ def load_local_quarantine() -> list[dict[str, Any]]:
 
 def save_local_quarantine(quarantine_items: list[dict[str, Any]]) -> None:
     ensure_quarantine_dir_and_file()
-    QUARANTINE_PATH.write_text(json.dumps(quarantine_items, indent=2), encoding="utf-8")
+    _atomic_write_text(QUARANTINE_PATH, json.dumps(quarantine_items, indent=2))
 
 
 def add_quarantine_items(
@@ -308,7 +315,7 @@ def load_local_data() -> dict[str, list[dict[str, Any]]]:
         # Preserve unreadable content for manual recovery, then heal with mock defaults.
         try:
             backup_path = DATA_PATH.with_name(f"{DATA_PATH.stem}.corrupt.json")
-            backup_path.write_text(DATA_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+            _atomic_write_text(backup_path, DATA_PATH.read_text(encoding="utf-8"))
         except Exception:
             pass
         data = get_mock_data()
@@ -318,8 +325,7 @@ def load_local_data() -> dict[str, list[dict[str, Any]]]:
 
 def save_local_data(data: dict[str, list[dict[str, Any]]]) -> None:
     ensure_data_dir()
-    with DATA_PATH.open("w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    _atomic_write_text(DATA_PATH, json.dumps(data, indent=2))
 
 
 def to_csv_bytes(rows: list[dict[str, Any]]) -> bytes:

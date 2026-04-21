@@ -24,3 +24,21 @@ def test_load_local_data_recovers_from_invalid_json(tmp_path: Path, monkeypatch)
     healed = json.loads(data_file.read_text(encoding="utf-8"))
     assert isinstance(healed, dict)
     assert set(healed.keys()) == {"transactions", "contacts", "deals", "tasks"}
+
+
+def test_save_local_data_writes_atomic_and_no_tmp_left(tmp_path: Path, monkeypatch) -> None:
+    data_file = tmp_path / "fincrm_data.json"
+    monkeypatch.setattr(dashboard, "DATA_PATH", data_file)
+
+    payload = {
+        "transactions": [],
+        "contacts": [],
+        "deals": [],
+        "tasks": [],
+    }
+    dashboard.save_local_data(payload)
+
+    assert data_file.exists()
+    parsed = json.loads(data_file.read_text(encoding="utf-8"))
+    assert parsed == payload
+    assert not (tmp_path / "fincrm_data.json.tmp").exists()

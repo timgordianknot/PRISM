@@ -112,3 +112,29 @@ def test_quarantine_delete_removes_item_by_id(tmp_path, monkeypatch):
     updated = json.loads(quarantine_file.read_text(encoding="utf-8"))
     assert len(updated) == 1
     assert updated[0]["id"] == "q-keep"
+
+
+def test_write_data_is_atomic_and_leaves_no_tmp(tmp_path, monkeypatch):
+    data_file = tmp_path / "fincrm_data.json"
+    monkeypatch.setattr(main, "DATA_PATH", data_file)
+
+    payload = {"transactions": [], "contacts": [], "deals": [], "tasks": []}
+    main.write_data(payload)
+
+    assert data_file.exists()
+    parsed = json.loads(data_file.read_text(encoding="utf-8"))
+    assert parsed == payload
+    assert not (tmp_path / "fincrm_data.json.tmp").exists()
+
+
+def test_write_quarantine_is_atomic_and_leaves_no_tmp(tmp_path, monkeypatch):
+    quarantine_file = tmp_path / "fincrm_quarantine.json"
+    monkeypatch.setattr(main, "QUARANTINE_PATH", quarantine_file)
+
+    payload = [{"id": "q-1", "section": "tasks", "row": {"task": "x"}}]
+    main.write_quarantine(payload)
+
+    assert quarantine_file.exists()
+    parsed = json.loads(quarantine_file.read_text(encoding="utf-8"))
+    assert parsed == payload
+    assert not (tmp_path / "fincrm_quarantine.json.tmp").exists()
