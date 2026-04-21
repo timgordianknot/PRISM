@@ -158,7 +158,7 @@ def get_quarantine(role: str = Depends(get_read_role)) -> list[dict[str, Any]]:
 
 
 class QuarantineAppendPayload(BaseModel):
-    items: list[dict[str, Any]]
+    items: list[Any]
 
 
 @app.post("/quarantine/items")
