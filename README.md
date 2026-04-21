@@ -60,3 +60,7 @@ When backend sync is enabled, quarantines are also appended to the backend so yo
   - `POST /quarantine/items`
   - `DELETE /quarantine/{item_id}`
   - `POST /quarantine/{item_id}/restore`
+
+## Release notes
+
+- v3 release notes: `RELEASE_NOTES_v3.md`
