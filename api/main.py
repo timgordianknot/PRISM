@@ -7,6 +7,7 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, status
 from pydantic import BaseModel
+from prism_schema import SECTION_KEYS, normalize_data, validate_dataset, validate_row
 
 APP_ROOT = Path(__file__).resolve().parents[1]
 DATA_PATH = APP_ROOT / "data" / "fincrm_data.json"
@@ -48,7 +49,7 @@ def ensure_data_file() -> None:
 
 def read_data() -> dict[str, list[dict[str, Any]]]:
     ensure_data_file()
-    return json.loads(DATA_PATH.read_text(encoding="utf-8"))
+    return normalize_data(json.loads(DATA_PATH.read_text(encoding="utf-8")))
 
 
 def write_data(data: dict[str, list[dict[str, Any]]]) -> None:
@@ -122,7 +123,16 @@ def update_data(
     payload: DataPayload,
     role: str = Depends(get_admin_role),
 ) -> dict[str, str]:
-    write_data(payload.model_dump())
+    validated_data, issues = validate_dataset(payload.model_dump())
+    if issues:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "message": "Payload failed schema validation",
+                "issues": issues,
+            },
+        )
+    write_data(validated_data)
     return {"status": "saved"}
 
 
@@ -141,11 +151,13 @@ def quarantine_append(
     role: str = Depends(get_admin_role),
 ) -> dict[str, str]:
     quarantine = read_quarantine()
+    appended_count = 0
     for item in payload.items:
         if isinstance(item, dict):
             quarantine.append(item)
+            appended_count += 1
     write_quarantine(quarantine)
-    return {"status": "saved", "count": str(len(payload.items))}
+    return {"status": "saved", "count": str(appended_count)}
 
 
 @app.delete("/quarantine/{item_id}")
@@ -173,11 +185,24 @@ def quarantine_restore(
     row = found.get("row")
     if not isinstance(section, str) or not isinstance(row, dict):
         raise HTTPException(status_code=400, detail="Malformed quarantine item")
+    if section not in SECTION_KEYS:
+        raise HTTPException(status_code=400, detail=f"Unknown section '{section}'")
+
+    normalized_row, reasons = validate_row(section, row)
+    if reasons:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Quarantine row still fails validation",
+                "reasons": reasons,
+            },
+        )
+    assert normalized_row is not None
 
     data = read_data()
     if section not in data or not isinstance(data.get(section), list):
         data[section] = []
-    data[section].append(row)
+    data[section].append(normalized_row)
 
     quarantine = [q for q in quarantine if str(q.get("id")) != item_id]
     write_data(data)

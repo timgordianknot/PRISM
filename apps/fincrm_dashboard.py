@@ -8,7 +8,6 @@ Coherent implementation order:
 
 from __future__ import annotations
 
-import re
 import uuid
 import json
 from datetime import date, datetime
@@ -22,16 +21,22 @@ try:
 except ImportError:
     requests = None
 
+from prism_schema import (
+    ALLOWED_CATEGORIES,
+    ALLOWED_CONTACT_STATUSES,
+    ALLOWED_DEAL_STAGES,
+    ALLOWED_TASK_PRIORITIES,
+    normalize_data as _normalize_data,
+    parse_bool as _parse_bool,
+    parse_iso_date_value as _parse_iso_date_value,
+    safe_float as _safe_float,
+    validate_row,
+)
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_PATH = PROJECT_ROOT / "data" / "fincrm_data.json"
 QUARANTINE_PATH = PROJECT_ROOT / "data" / "fincrm_quarantine.json"
 API_BASE_URL = "http://127.0.0.1:8000"
-
-ALLOWED_CATEGORIES = ["Revenue", "Operations", "Infrastructure", "Software", "Other"]
-ALLOWED_CONTACT_STATUSES = ["Prospect", "Active", "Dormant"]
-ALLOWED_DEAL_STAGES = ["Discovery", "Proposal", "Negotiation", "Won", "Lost"]
-ALLOWED_TASK_PRIORITIES = ["Low", "Medium", "High"]
-EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 def api_headers() -> dict[str, str]:
@@ -41,176 +46,37 @@ def api_headers() -> dict[str, str]:
     return {}
 
 
-def _safe_float(v: Any) -> float | None:
-    try:
-        if v is None:
-            return None
-        if isinstance(v, bool):
-            return float(int(v))
-        s = str(v).strip().replace("$", "").replace(",", "")
-        if s == "":
-            return None
-        return float(s)
-    except Exception:
-        return None
-
-
-def _parse_bool(v: Any) -> bool | None:
-    if isinstance(v, bool):
-        return v
-    if v is None:
-        return None
-    s = str(v).strip().lower()
-    if s in {"true", "1", "yes", "y"}:
-        return True
-    if s in {"false", "0", "no", "n"}:
-        return False
-    return None
-
-
-def _parse_iso_date_value(v: Any) -> str | None:
-    try:
-        if isinstance(v, datetime):
-            return v.date().isoformat()
-        if isinstance(v, date):
-            return v.isoformat()
-        if v is None:
-            return None
-        s = str(v).strip()
-        if s == "":
-            return None
-        return date.fromisoformat(s).isoformat()
-    except Exception:
-        return None
-
-
-def _normalize_data(data: Any) -> dict[str, list[dict[str, Any]]]:
-    # Ensure schema shape exists so UI doesn't crash on missing keys.
-    normalized: dict[str, list[dict[str, Any]]] = {
-        "transactions": [],
-        "contacts": [],
-        "deals": [],
-        "tasks": [],
+def set_sync_status(level: str, message: str) -> None:
+    if not hasattr(st, "session_state"):
+        return
+    st.session_state["sync_status"] = {
+        "level": level,
+        "message": message,
+        "updated_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%SZ"),
     }
-    if not isinstance(data, dict):
-        return normalized
-    for key in normalized.keys():
-        if isinstance(data.get(key), list):
-            normalized[key] = [r for r in data[key] if isinstance(r, dict)]
-    return normalized
 
 
-def _validate_transaction_row(row: dict[str, Any]) -> tuple[dict[str, Any] | None, list[str]]:
-    errors: list[str] = []
-    tx_date = _parse_iso_date_value(row.get("date"))
-    if not tx_date:
-        errors.append("date must be YYYY-MM-DD")
-
-    merchant = str(row.get("merchant", "")).strip()
-    if not merchant:
-        errors.append("merchant is required")
-
-    category = str(row.get("category", "")).strip()
-    if category not in ALLOWED_CATEGORIES:
-        errors.append(f"category must be one of {ALLOWED_CATEGORIES}")
-
-    amount = _safe_float(row.get("amount"))
-    if amount is None:
-        errors.append("amount must be a number")
-
-    if errors:
-        return None, errors
-    return {
-        "date": tx_date,
-        "merchant": merchant,
-        "category": category,
-        "amount": float(amount),
-    }, []
+def clear_sync_status() -> None:
+    if hasattr(st, "session_state"):
+        st.session_state.pop("sync_status", None)
 
 
-def _validate_contact_row(row: dict[str, Any]) -> tuple[dict[str, Any] | None, list[str]]:
-    errors: list[str] = []
-    name = str(row.get("name", "")).strip()
-    if not name:
-        errors.append("name is required")
-
-    company = str(row.get("company", "")).strip()
-    if not company:
-        errors.append("company is required")
-
-    email = str(row.get("email", "")).strip().lower()
-    if not email or not EMAIL_RE.match(email):
-        errors.append("email must look like an email address")
-
-    status = str(row.get("status", "")).strip()
-    if status not in ALLOWED_CONTACT_STATUSES:
-        errors.append(f"status must be one of {ALLOWED_CONTACT_STATUSES}")
-
-    if errors:
-        return None, errors
-    return {"name": name, "company": company, "email": email, "status": status}, []
-
-
-def _validate_deal_row(row: dict[str, Any]) -> tuple[dict[str, Any] | None, list[str]]:
-    errors: list[str] = []
-    deal = str(row.get("deal", "")).strip()
-    if not deal:
-        errors.append("deal is required")
-
-    company = str(row.get("company", "")).strip()
-    if not company:
-        errors.append("company is required")
-
-    stage = str(row.get("stage", "")).strip()
-    if stage not in ALLOWED_DEAL_STAGES:
-        errors.append(f"stage must be one of {ALLOWED_DEAL_STAGES}")
-
-    value = _safe_float(row.get("value"))
-    if value is None:
-        errors.append("value must be a number")
-
-    if errors:
-        return None, errors
-    return {"deal": deal, "company": company, "stage": stage, "value": float(value)}, []
-
-
-def _validate_task_row(row: dict[str, Any]) -> tuple[dict[str, Any] | None, list[str]]:
-    errors: list[str] = []
-    task = str(row.get("task", "")).strip()
-    if not task:
-        errors.append("task is required")
-
-    owner = str(row.get("owner", "")).strip()
-    if not owner:
-        errors.append("owner is required")
-
-    due = _parse_iso_date_value(row.get("due"))
-    if not due:
-        errors.append("due must be YYYY-MM-DD")
-
-    priority = str(row.get("priority", "")).strip()
-    if priority not in ALLOWED_TASK_PRIORITIES:
-        errors.append(f"priority must be one of {ALLOWED_TASK_PRIORITIES}")
-
-    done = _parse_bool(row.get("done"))
-    if done is None:
-        errors.append("done must be boolean-like (true/false)")
-
-    if errors:
-        return None, errors
-    return {"task": task, "owner": owner, "due": due, "priority": priority, "done": bool(done)}, []
-
-
-def validate_row(section_key: str, row: dict[str, Any]) -> tuple[dict[str, Any] | None, list[str]]:
-    if section_key == "transactions":
-        return _validate_transaction_row(row)
-    if section_key == "contacts":
-        return _validate_contact_row(row)
-    if section_key == "deals":
-        return _validate_deal_row(row)
-    if section_key == "tasks":
-        return _validate_task_row(row)
-    return None, [f"Unknown section: {section_key}"]
+def _extract_error_detail(response: Any) -> str:
+    try:
+        payload = response.json()
+        if isinstance(payload, dict):
+            detail = payload.get("detail")
+            if isinstance(detail, str):
+                return detail
+            if isinstance(detail, dict):
+                message = detail.get("message")
+                if isinstance(message, str):
+                    return message
+                return json.dumps(detail)
+            return json.dumps(payload)
+    except Exception:
+        pass
+    return response.text[:300] if getattr(response, "text", None) else "No response details"
 
 
 def ensure_quarantine_dir_and_file() -> None:
@@ -338,45 +204,74 @@ def parse_csv_text(csv_text: str) -> list[dict[str, str]]:
 
 def load_data_from_api() -> dict[str, list[dict[str, Any]]] | None:
     if requests is None:
+        set_sync_status("warning", "Backend sync unavailable: requests package is not installed.")
         return None
     try:
         response = requests.get(f"{API_BASE_URL}/data", timeout=3, headers=api_headers())
         response.raise_for_status()
         payload = response.json()
         if isinstance(payload, dict):
+            set_sync_status("success", "Loaded latest data from FastAPI backend.")
             return _normalize_data(payload)
-    except Exception:
+    except requests.HTTPError as exc:
+        response = exc.response
+        detail = _extract_error_detail(response) if response is not None else "Unknown HTTP error"
+        status_code = response.status_code if response is not None else "unknown"
+        set_sync_status("error", f"Failed to load data from backend ({status_code}): {detail}")
+        return None
+    except Exception as exc:
+        set_sync_status("error", f"Failed to load data from backend: {exc}")
         return None
     return None
 
 
 def save_data_to_api(data: dict[str, list[dict[str, Any]]]) -> bool:
     if requests is None:
+        set_sync_status("warning", "Backend save skipped: requests package is not installed.")
         return False
     try:
         response = requests.put(f"{API_BASE_URL}/data", json=data, timeout=3, headers=api_headers())
         response.raise_for_status()
+        set_sync_status("success", "Saved data to FastAPI backend.")
         return True
-    except Exception:
+    except requests.HTTPError as exc:
+        response = exc.response
+        detail = _extract_error_detail(response) if response is not None else "Unknown HTTP error"
+        status_code = response.status_code if response is not None else "unknown"
+        set_sync_status("error", f"Backend save failed ({status_code}): {detail}")
+        return False
+    except Exception as exc:
+        set_sync_status("error", f"Backend save failed: {exc}")
         return False
 
 
 def load_quarantine_from_api() -> list[dict[str, Any]] | None:
     if requests is None:
+        set_sync_status("warning", "Backend quarantine sync unavailable: requests package is not installed.")
         return None
     try:
         response = requests.get(f"{API_BASE_URL}/quarantine", timeout=3, headers=api_headers())
         response.raise_for_status()
         payload = response.json()
         if isinstance(payload, list):
+            set_sync_status("success", "Loaded quarantine items from FastAPI backend.")
             return [q for q in payload if isinstance(q, dict)]
-    except Exception:
+    except requests.HTTPError as exc:
+        response = exc.response
+        detail = _extract_error_detail(response) if response is not None else "Unknown HTTP error"
+        status_code = response.status_code if response is not None else "unknown"
+        set_sync_status("error", f"Failed to load quarantine from backend ({status_code}): {detail}")
+        return None
+    except Exception as exc:
+        set_sync_status("error", f"Failed to load quarantine from backend: {exc}")
         return None
     return None
 
 
 def append_quarantine_items_to_api(items: list[dict[str, Any]]) -> bool:
     if requests is None or not items:
+        if items:
+            set_sync_status("warning", "Quarantine sync skipped: requests package is not installed.")
         return False
     try:
         response = requests.post(
@@ -386,26 +281,45 @@ def append_quarantine_items_to_api(items: list[dict[str, Any]]) -> bool:
             headers=api_headers(),
         )
         response.raise_for_status()
+        set_sync_status("success", f"Synced {len(items)} quarantine item(s) to backend.")
         return True
-    except Exception:
+    except requests.HTTPError as exc:
+        response = exc.response
+        detail = _extract_error_detail(response) if response is not None else "Unknown HTTP error"
+        status_code = response.status_code if response is not None else "unknown"
+        set_sync_status("error", f"Failed to sync quarantine items ({status_code}): {detail}")
+        return False
+    except Exception as exc:
+        set_sync_status("error", f"Failed to sync quarantine items: {exc}")
         return False
 
 
 def delete_quarantine_item_via_api(item_id: str) -> bool:
     if requests is None:
+        set_sync_status("warning", "Backend quarantine delete skipped: requests package is not installed.")
         return False
     try:
         response = requests.delete(f"{API_BASE_URL}/quarantine/{item_id}", timeout=3, headers=api_headers())
         response.raise_for_status()
+        set_sync_status("success", f"Deleted quarantine item {item_id} on backend.")
         return True
-    except Exception:
+    except requests.HTTPError as exc:
+        response = exc.response
+        detail = _extract_error_detail(response) if response is not None else "Unknown HTTP error"
+        status_code = response.status_code if response is not None else "unknown"
+        set_sync_status("error", f"Failed to delete quarantine item on backend ({status_code}): {detail}")
+        return False
+    except Exception as exc:
+        set_sync_status("error", f"Failed to delete quarantine item on backend: {exc}")
         return False
 
 
 def persist_data(data: dict[str, list[dict[str, Any]]]) -> None:
     # Backend-first if connected, always mirrored locally as reliable fallback.
     if st.session_state.get("backend_mode"):
-        save_data_to_api(data)
+        backend_saved = save_data_to_api(data)
+        if not backend_saved:
+            set_sync_status("warning", "Saved locally; backend save failed. Check token, API availability, or payload errors.")
     save_local_data(data)
 
 
@@ -504,7 +418,7 @@ def render_transactions(data: dict[str, list[dict[str, Any]]]) -> None:
         with st.form("add_tx"):
             tx_date = st.date_input("Date")
             merchant = st.text_input("Merchant")
-            category = st.selectbox("Category", ["Revenue", "Operations", "Infrastructure", "Software", "Other"])
+            category = st.selectbox("Category", ALLOWED_CATEGORIES)
             amount = st.number_input("Amount", value=0.0, step=10.0)
             submit = st.form_submit_button("Add")
             if submit:
@@ -534,7 +448,7 @@ def render_contacts(data: dict[str, list[dict[str, Any]]]) -> None:
             name = st.text_input("Name")
             company = st.text_input("Company")
             email = st.text_input("Email")
-            status = st.selectbox("Status", ["Prospect", "Active", "Dormant"])
+            status = st.selectbox("Status", ALLOWED_CONTACT_STATUSES)
             submit = st.form_submit_button("Add")
             if submit:
                 candidate = {
@@ -560,7 +474,7 @@ def render_deals(data: dict[str, list[dict[str, Any]]]) -> None:
 
     stage_filter = st.multiselect(
         "Filter stages",
-        ["Discovery", "Proposal", "Negotiation", "Won", "Lost"],
+        ALLOWED_DEAL_STAGES,
         default=["Discovery", "Proposal", "Negotiation", "Won"],
     )
     filtered = [d for d in data["deals"] if d["stage"] in stage_filter]
@@ -577,7 +491,7 @@ def render_tasks(data: dict[str, list[dict[str, Any]]]) -> None:
         hide_index=True,
         column_config={
             "done": st.column_config.CheckboxColumn("Done"),
-            "priority": st.column_config.SelectboxColumn("Priority", options=["Low", "Medium", "High"]),
+            "priority": st.column_config.SelectboxColumn("Priority", options=ALLOWED_TASK_PRIORITIES),
         },
         key="tasks_editor",
     )
@@ -795,6 +709,8 @@ def main() -> None:
     with st.sidebar.expander("Storage Mode", expanded=True):
         backend_toggle = st.toggle("Use FastAPI backend", value=st.session_state.backend_mode)
         st.session_state.backend_mode = backend_toggle
+        if not backend_toggle:
+            clear_sync_status()
         st.session_state.api_token = st.text_input(
             "API token (optional)",
             value=st.session_state.api_token,
@@ -802,6 +718,19 @@ def main() -> None:
             help="Used for backend sync. If admin tokens are configured on the API, this token should be the admin token to restore/delete quarantined items.",
         )
         st.caption("Backend URL: http://127.0.0.1:8000")
+
+    sync_status = st.session_state.get("sync_status")
+    if isinstance(sync_status, dict):
+        level = str(sync_status.get("level", "info"))
+        message = str(sync_status.get("message", ""))
+        timestamp = str(sync_status.get("updated_at", ""))
+        if message:
+            if level == "error":
+                st.error(f"Sync status ({timestamp}): {message}")
+            elif level == "warning":
+                st.warning(f"Sync status ({timestamp}): {message}")
+            elif level == "success":
+                st.success(f"Sync status ({timestamp}): {message}")
 
     if "quarantine_items" not in st.session_state:
         if st.session_state.backend_mode:
