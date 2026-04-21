@@ -1,8 +1,17 @@
 # PRISM
 
+## Quick commands (recommended)
+
+```bash
+make install   # install dependencies
+make test      # run pytest suite
+make run-api   # start FastAPI backend (http://127.0.0.1:8000)
+make run-ui    # start Streamlit dashboard
+```
+
 ## Run Streamlit Dashboard
 
-```powershell
+```bash
 pip install -r requirements.txt
 streamlit run apps/fincrm_dashboard.py
 ```
@@ -11,7 +20,7 @@ streamlit run apps/fincrm_dashboard.py
 
 Run this in a second terminal from the same folder:
 
-```powershell
+```bash
 uvicorn api.main:app --reload
 ```
 
@@ -19,7 +28,7 @@ Then in the Streamlit sidebar, enable `Use FastAPI backend`.
 
 ## Run tests
 
-```powershell
+```bash
 pip install -r requirements.txt
 pytest -q
 ```
