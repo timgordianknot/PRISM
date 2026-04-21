@@ -588,7 +588,7 @@ def render_deals(data: dict[str, list[dict[str, Any]]]) -> None:
         ["Discovery", "Proposal", "Negotiation", "Won", "Lost"],
         default=["Discovery", "Proposal", "Negotiation", "Won"],
     )
-    filtered = [d for d in data["deals"] if d["stage"] in stage_filter]
+    filtered = [d for d in data["deals"] if d.get("stage") in stage_filter]
     st.write(f"Showing {len(filtered)} deal(s)")
     st.dataframe(filtered, use_container_width=True, hide_index=True)
     render_data_tools("Deals", data, numeric_keys=["value"])

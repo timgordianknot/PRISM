@@ -86,7 +86,11 @@ def ensure_quarantine_file() -> None:
 
 def read_quarantine() -> list[dict[str, Any]]:
     ensure_quarantine_file()
-    parsed = json.loads(QUARANTINE_PATH.read_text(encoding="utf-8"))
+    try:
+        parsed = json.loads(QUARANTINE_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        write_quarantine([])
+        return []
     if isinstance(parsed, list):
         return [q for q in parsed if isinstance(q, dict)]
     return []

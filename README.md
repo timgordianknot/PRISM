@@ -17,6 +17,13 @@ uvicorn api.main:app --reload
 
 Then in the Streamlit sidebar, enable `Use FastAPI backend`.
 
+## Run tests
+
+```powershell
+pip install -r requirements.txt
+pytest -q
+```
+
 ### API Permissions (recommended for durability across devices)
 
 FastAPI can enforce permissions via environment variables on the backend machine:
