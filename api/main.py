@@ -35,8 +35,8 @@ def _atomic_write_text(path: Path, content: str) -> None:
             suffix=".tmp",
             delete=False,
         ) as temp_file:
-            temp_file.write(content)
             temp_name = temp_file.name
+            temp_file.write(content)
         Path(temp_name).replace(path)
     finally:
         if temp_name:
