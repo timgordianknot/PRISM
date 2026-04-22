@@ -8,8 +8,10 @@ Coherent implementation order:
 
 from __future__ import annotations
 
-import uuid
+import csv
+import io
 import json
+import uuid
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -32,6 +34,7 @@ from prism_schema import (
     safe_float as _safe_float,
     validate_row,
 )
+from prism_storage import file_locks, read_json_file, save_json_unlocked, write_json_file
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_PATH = PROJECT_ROOT / "data" / "fincrm_data.json"
@@ -46,19 +49,167 @@ def api_headers() -> dict[str, str]:
     return {}
 
 
-def set_sync_status(level: str, message: str) -> None:
+def _now_utc_label() -> str:
+    return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%SZ")
+
+
+def set_sync_status(
+    level: str,
+    message: str,
+    *,
+    operation: str | None = None,
+    retry_action: str | None = None,
+    clear_retry: bool = False,
+) -> None:
     if not hasattr(st, "session_state"):
         return
     st.session_state["sync_status"] = {
         "level": level,
         "message": message,
-        "updated_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%SZ"),
+        "updated_at": _now_utc_label(),
+        "operation": operation,
     }
+    health = st.session_state.get("sync_health", {})
+    if not isinstance(health, dict):
+        health = {}
+    health["last_operation"] = operation
+    health["last_message"] = message
+    health["last_level"] = level
+    if level == "success":
+        health["last_success_at"] = st.session_state["sync_status"]["updated_at"]
+        health["last_success_message"] = message
+    if level in {"warning", "error"}:
+        health["last_error_at"] = st.session_state["sync_status"]["updated_at"]
+        health["last_error_message"] = message
+    st.session_state["sync_health"] = health
+
+    if retry_action:
+        st.session_state["sync_retry_action"] = retry_action
+    elif clear_retry:
+        st.session_state.pop("sync_retry_action", None)
 
 
 def clear_sync_status() -> None:
     if hasattr(st, "session_state"):
         st.session_state.pop("sync_status", None)
+
+
+def get_pending_backend_ops() -> dict[str, list[Any]]:
+    pending = st.session_state.get("pending_backend_ops")
+    if not isinstance(pending, dict):
+        pending = {"quarantine_items": [], "delete_ids": []}
+    quarantine_items = pending.get("quarantine_items")
+    delete_ids = pending.get("delete_ids")
+    normalized = {
+        "quarantine_items": quarantine_items if isinstance(quarantine_items, list) else [],
+        "delete_ids": delete_ids if isinstance(delete_ids, list) else [],
+    }
+    st.session_state["pending_backend_ops"] = normalized
+    return normalized
+
+
+def queue_pending_quarantine_items(items: list[dict[str, Any]]) -> None:
+    if not items:
+        return
+    pending = get_pending_backend_ops()
+    existing_ids = {str(item.get("id")) for item in pending["quarantine_items"] if isinstance(item, dict)}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        item_id = str(item.get("id", ""))
+        if item_id and item_id in existing_ids:
+            continue
+        pending["quarantine_items"].append(item)
+        if item_id:
+            existing_ids.add(item_id)
+    st.session_state["pending_backend_ops"] = pending
+
+
+def queue_pending_delete(item_id: str) -> None:
+    pending = get_pending_backend_ops()
+    if item_id not in pending["delete_ids"]:
+        pending["delete_ids"].append(item_id)
+    st.session_state["pending_backend_ops"] = pending
+
+
+def sync_pending_backend_ops() -> bool:
+    pending = get_pending_backend_ops()
+    synced_any = False
+
+    if pending["quarantine_items"]:
+        if append_quarantine_items_to_api([item for item in pending["quarantine_items"] if isinstance(item, dict)]):
+            pending["quarantine_items"] = []
+            synced_any = True
+        else:
+            st.session_state["pending_backend_ops"] = pending
+            return False
+
+    if pending["delete_ids"]:
+        remaining_delete_ids: list[str] = []
+        for item_id in pending["delete_ids"]:
+            if not delete_quarantine_item_via_api(item_id):
+                remaining_delete_ids.append(item_id)
+        pending["delete_ids"] = remaining_delete_ids
+        if remaining_delete_ids:
+            st.session_state["pending_backend_ops"] = pending
+            return False
+        synced_any = True
+
+    st.session_state["pending_backend_ops"] = pending
+    return synced_any or (not pending["quarantine_items"] and not pending["delete_ids"])
+
+
+SYNC_RETRY_RELOAD = "reload_all"
+SYNC_RETRY_SAVE_DATA = "save_data"
+SYNC_RETRY_PENDING = "pending_ops"
+
+
+def retry_last_sync_action() -> None:
+    action = st.session_state.get("sync_retry_action")
+    if not isinstance(action, str):
+        set_sync_status("warning", "No retry action is currently available.")
+        return
+
+    if action == SYNC_RETRY_RELOAD:
+        remote_data = load_data_from_api()
+        if remote_data is not None:
+            st.session_state.mock_data = remote_data
+        else:
+            st.session_state.mock_data = load_local_data()
+
+        remote_quarantine = load_quarantine_from_api()
+        if remote_quarantine is not None:
+            st.session_state.quarantine_items = remote_quarantine
+        else:
+            st.session_state.quarantine_items = load_local_quarantine()
+        return
+
+    if action == SYNC_RETRY_SAVE_DATA:
+        mock_data = st.session_state.get("mock_data")
+        if isinstance(mock_data, dict):
+            persist_data(mock_data)
+            return
+        set_sync_status("warning", "No in-memory dataset available to retry save.")
+        return
+
+    if action == SYNC_RETRY_PENDING:
+        if sync_pending_backend_ops():
+            set_sync_status(
+                "success",
+                "Successfully synced pending backend operations.",
+                operation="pending_ops_sync",
+                clear_retry=True,
+            )
+        else:
+            set_sync_status(
+                "warning",
+                "Pending backend operations still need retry.",
+                operation="pending_ops_sync",
+                retry_action=SYNC_RETRY_PENDING,
+            )
+        return
+
+    set_sync_status("warning", f"Unsupported retry action: {action}")
 
 
 def _extract_error_detail(response: Any) -> str:
@@ -79,26 +230,24 @@ def _extract_error_detail(response: Any) -> str:
     return response.text[:300] if getattr(response, "text", None) else "No response details"
 
 
-def ensure_quarantine_dir_and_file() -> None:
-    QUARANTINE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if not QUARANTINE_PATH.exists():
-        QUARANTINE_PATH.write_text("[]", encoding="utf-8")
-
-
 def load_local_quarantine() -> list[dict[str, Any]]:
-    ensure_quarantine_dir_and_file()
-    try:
-        parsed = json.loads(QUARANTINE_PATH.read_text(encoding="utf-8"))
-        if isinstance(parsed, list):
-            return [q for q in parsed if isinstance(q, dict)]
-    except Exception:
-        pass
+    parsed = read_json_file(QUARANTINE_PATH, default_factory=list)
+    if isinstance(parsed, list):
+        return [q for q in parsed if isinstance(q, dict)]
     return []
 
 
 def save_local_quarantine(quarantine_items: list[dict[str, Any]]) -> None:
-    ensure_quarantine_dir_and_file()
-    QUARANTINE_PATH.write_text(json.dumps(quarantine_items, indent=2), encoding="utf-8")
+    write_json_file(QUARANTINE_PATH, [q for q in quarantine_items if isinstance(q, dict)])
+
+
+def save_local_data_and_quarantine(
+    data: dict[str, list[dict[str, Any]]],
+    quarantine_items: list[dict[str, Any]],
+) -> None:
+    with file_locks([DATA_PATH, QUARANTINE_PATH]):
+        save_json_unlocked(DATA_PATH, _normalize_data(data))
+        save_json_unlocked(QUARANTINE_PATH, [q for q in quarantine_items if isinstance(q, dict)])
 
 
 def add_quarantine_items(
@@ -151,119 +300,154 @@ def get_mock_data() -> dict[str, list[dict[str, Any]]]:
     }
 
 
-def ensure_data_dir() -> None:
-    DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
-
-
 def load_local_data() -> dict[str, list[dict[str, Any]]]:
-    ensure_data_dir()
-    if not DATA_PATH.exists():
-        data = get_mock_data()
-        save_local_data(data)
-        return _normalize_data(data)
-
-    with DATA_PATH.open("r", encoding="utf-8") as f:
-        return _normalize_data(json.load(f))
+    payload = read_json_file(DATA_PATH, default_factory=get_mock_data)
+    return _normalize_data(payload)
 
 
 def save_local_data(data: dict[str, list[dict[str, Any]]]) -> None:
-    ensure_data_dir()
-    with DATA_PATH.open("w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    write_json_file(DATA_PATH, _normalize_data(data))
 
 
 def to_csv_bytes(rows: list[dict[str, Any]]) -> bytes:
     if not rows:
         return b""
-    headers = list(rows[0].keys())
-    lines = [",".join(headers)]
+    headers: list[str] = []
     for row in rows:
-        fields: list[str] = []
-        for header in headers:
-            value = str(row.get(header, ""))
-            escaped = value.replace('"', '""')
-            if "," in escaped or '"' in escaped:
-                escaped = f'"{escaped}"'
-            fields.append(escaped)
-        lines.append(",".join(fields))
-    return ("\n".join(lines) + "\n").encode("utf-8")
+        for key in row.keys():
+            if key not in headers:
+                headers.append(key)
+
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=headers, extrasaction="ignore")
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({header: row.get(header, "") for header in headers})
+    return output.getvalue().encode("utf-8")
 
 
 def parse_csv_text(csv_text: str) -> list[dict[str, str]]:
-    lines = [line.strip() for line in csv_text.splitlines() if line.strip()]
-    if not lines:
+    if not csv_text.strip():
         return []
-    headers = [h.strip() for h in lines[0].split(",")]
+    reader = csv.DictReader(io.StringIO(csv_text))
+    if reader.fieldnames is None:
+        return []
     rows: list[dict[str, str]] = []
-    for line in lines[1:]:
-        values = [v.strip() for v in line.split(",")]
-        padded = values + [""] * (len(headers) - len(values))
-        rows.append(dict(zip(headers, padded)))
+    for row in reader:
+        if not isinstance(row, dict):
+            continue
+        normalized: dict[str, str] = {}
+        for key, value in row.items():
+            if key is None:
+                continue
+            normalized[str(key).strip()] = "" if value is None else str(value).strip()
+        if any(value != "" for value in normalized.values()):
+            rows.append(normalized)
     return rows
 
 
 def load_data_from_api() -> dict[str, list[dict[str, Any]]] | None:
     if requests is None:
-        set_sync_status("warning", "Backend sync unavailable: requests package is not installed.")
+        set_sync_status(
+            "warning",
+            "Backend sync unavailable: requests package is not installed.",
+            operation="load_data",
+            retry_action=SYNC_RETRY_RELOAD,
+        )
         return None
     try:
         response = requests.get(f"{API_BASE_URL}/data", timeout=3, headers=api_headers())
         response.raise_for_status()
         payload = response.json()
         if isinstance(payload, dict):
-            set_sync_status("success", "Loaded latest data from FastAPI backend.")
+            set_sync_status("success", "Loaded latest data from FastAPI backend.", operation="load_data", clear_retry=True)
             return _normalize_data(payload)
     except requests.HTTPError as exc:
         response = exc.response
         detail = _extract_error_detail(response) if response is not None else "Unknown HTTP error"
         status_code = response.status_code if response is not None else "unknown"
-        set_sync_status("error", f"Failed to load data from backend ({status_code}): {detail}")
+        set_sync_status(
+            "error",
+            f"Failed to load data from backend ({status_code}): {detail}",
+            operation="load_data",
+            retry_action=SYNC_RETRY_RELOAD,
+        )
         return None
     except Exception as exc:
-        set_sync_status("error", f"Failed to load data from backend: {exc}")
+        set_sync_status("error", f"Failed to load data from backend: {exc}", operation="load_data", retry_action=SYNC_RETRY_RELOAD)
         return None
     return None
 
 
 def save_data_to_api(data: dict[str, list[dict[str, Any]]]) -> bool:
     if requests is None:
-        set_sync_status("warning", "Backend save skipped: requests package is not installed.")
+        set_sync_status(
+            "warning",
+            "Backend save skipped: requests package is not installed.",
+            operation="save_data",
+            retry_action=SYNC_RETRY_SAVE_DATA,
+        )
         return False
     try:
         response = requests.put(f"{API_BASE_URL}/data", json=data, timeout=3, headers=api_headers())
         response.raise_for_status()
-        set_sync_status("success", "Saved data to FastAPI backend.")
+        set_sync_status("success", "Saved data to FastAPI backend.", operation="save_data", clear_retry=True)
         return True
     except requests.HTTPError as exc:
         response = exc.response
         detail = _extract_error_detail(response) if response is not None else "Unknown HTTP error"
         status_code = response.status_code if response is not None else "unknown"
-        set_sync_status("error", f"Backend save failed ({status_code}): {detail}")
+        set_sync_status(
+            "error",
+            f"Backend save failed ({status_code}): {detail}",
+            operation="save_data",
+            retry_action=SYNC_RETRY_SAVE_DATA,
+        )
         return False
     except Exception as exc:
-        set_sync_status("error", f"Backend save failed: {exc}")
+        set_sync_status("error", f"Backend save failed: {exc}", operation="save_data", retry_action=SYNC_RETRY_SAVE_DATA)
         return False
 
 
 def load_quarantine_from_api() -> list[dict[str, Any]] | None:
     if requests is None:
-        set_sync_status("warning", "Backend quarantine sync unavailable: requests package is not installed.")
+        set_sync_status(
+            "warning",
+            "Backend quarantine sync unavailable: requests package is not installed.",
+            operation="load_quarantine",
+            retry_action=SYNC_RETRY_RELOAD,
+        )
         return None
     try:
         response = requests.get(f"{API_BASE_URL}/quarantine", timeout=3, headers=api_headers())
         response.raise_for_status()
         payload = response.json()
         if isinstance(payload, list):
-            set_sync_status("success", "Loaded quarantine items from FastAPI backend.")
+            set_sync_status(
+                "success",
+                "Loaded quarantine items from FastAPI backend.",
+                operation="load_quarantine",
+                clear_retry=True,
+            )
             return [q for q in payload if isinstance(q, dict)]
     except requests.HTTPError as exc:
         response = exc.response
         detail = _extract_error_detail(response) if response is not None else "Unknown HTTP error"
         status_code = response.status_code if response is not None else "unknown"
-        set_sync_status("error", f"Failed to load quarantine from backend ({status_code}): {detail}")
+        set_sync_status(
+            "error",
+            f"Failed to load quarantine from backend ({status_code}): {detail}",
+            operation="load_quarantine",
+            retry_action=SYNC_RETRY_RELOAD,
+        )
         return None
     except Exception as exc:
-        set_sync_status("error", f"Failed to load quarantine from backend: {exc}")
+        set_sync_status(
+            "error",
+            f"Failed to load quarantine from backend: {exc}",
+            operation="load_quarantine",
+            retry_action=SYNC_RETRY_RELOAD,
+        )
         return None
     return None
 
@@ -271,7 +455,12 @@ def load_quarantine_from_api() -> list[dict[str, Any]] | None:
 def append_quarantine_items_to_api(items: list[dict[str, Any]]) -> bool:
     if requests is None or not items:
         if items:
-            set_sync_status("warning", "Quarantine sync skipped: requests package is not installed.")
+            set_sync_status(
+                "warning",
+                "Quarantine sync skipped: requests package is not installed.",
+                operation="append_quarantine",
+                retry_action=SYNC_RETRY_PENDING,
+            )
         return False
     try:
         response = requests.post(
@@ -281,45 +470,84 @@ def append_quarantine_items_to_api(items: list[dict[str, Any]]) -> bool:
             headers=api_headers(),
         )
         response.raise_for_status()
-        set_sync_status("success", f"Synced {len(items)} quarantine item(s) to backend.")
+        set_sync_status(
+            "success",
+            f"Synced {len(items)} quarantine item(s) to backend.",
+            operation="append_quarantine",
+            clear_retry=True,
+        )
         return True
     except requests.HTTPError as exc:
         response = exc.response
         detail = _extract_error_detail(response) if response is not None else "Unknown HTTP error"
         status_code = response.status_code if response is not None else "unknown"
-        set_sync_status("error", f"Failed to sync quarantine items ({status_code}): {detail}")
+        set_sync_status(
+            "error",
+            f"Failed to sync quarantine items ({status_code}): {detail}",
+            operation="append_quarantine",
+            retry_action=SYNC_RETRY_PENDING,
+        )
         return False
     except Exception as exc:
-        set_sync_status("error", f"Failed to sync quarantine items: {exc}")
+        set_sync_status(
+            "error",
+            f"Failed to sync quarantine items: {exc}",
+            operation="append_quarantine",
+            retry_action=SYNC_RETRY_PENDING,
+        )
         return False
 
 
 def delete_quarantine_item_via_api(item_id: str) -> bool:
     if requests is None:
-        set_sync_status("warning", "Backend quarantine delete skipped: requests package is not installed.")
+        set_sync_status(
+            "warning",
+            "Backend quarantine delete skipped: requests package is not installed.",
+            operation="delete_quarantine",
+            retry_action=SYNC_RETRY_PENDING,
+        )
         return False
     try:
         response = requests.delete(f"{API_BASE_URL}/quarantine/{item_id}", timeout=3, headers=api_headers())
         response.raise_for_status()
-        set_sync_status("success", f"Deleted quarantine item {item_id} on backend.")
+        set_sync_status(
+            "success",
+            f"Deleted quarantine item {item_id} on backend.",
+            operation="delete_quarantine",
+            clear_retry=True,
+        )
         return True
     except requests.HTTPError as exc:
         response = exc.response
         detail = _extract_error_detail(response) if response is not None else "Unknown HTTP error"
         status_code = response.status_code if response is not None else "unknown"
-        set_sync_status("error", f"Failed to delete quarantine item on backend ({status_code}): {detail}")
+        set_sync_status(
+            "error",
+            f"Failed to delete quarantine item on backend ({status_code}): {detail}",
+            operation="delete_quarantine",
+            retry_action=SYNC_RETRY_PENDING,
+        )
         return False
     except Exception as exc:
-        set_sync_status("error", f"Failed to delete quarantine item on backend: {exc}")
+        set_sync_status(
+            "error",
+            f"Failed to delete quarantine item on backend: {exc}",
+            operation="delete_quarantine",
+            retry_action=SYNC_RETRY_PENDING,
+        )
         return False
 
 
 def persist_data(data: dict[str, list[dict[str, Any]]]) -> None:
-    # Backend-first if connected, always mirrored locally as reliable fallback.
     if st.session_state.get("backend_mode"):
         backend_saved = save_data_to_api(data)
         if not backend_saved:
-            set_sync_status("warning", "Saved locally; backend save failed. Check token, API availability, or payload errors.")
+            set_sync_status(
+                "warning",
+                "Saved locally; backend save failed. Check token, API availability, or payload errors.",
+                operation="save_data",
+                retry_action=SYNC_RETRY_SAVE_DATA,
+            )
     save_local_data(data)
 
 
@@ -359,21 +587,27 @@ def render_data_tools(section: str, data: dict[str, list[dict[str, Any]]], numer
                         assert normalized is not None
                         valid_rows.append(normalized)
 
-                # Durable behavior: never silently drop invalid rows.
                 st.session_state.quarantine_items = st.session_state.get("quarantine_items", [])
                 if invalid_rows:
                     new_items = add_quarantine_items(key, st.session_state.quarantine_items, invalid_rows, invalid_reasons)
-                    save_local_quarantine(st.session_state.quarantine_items)
                     if st.session_state.get("backend_mode"):
-                        append_quarantine_items_to_api(new_items)
+                        if not append_quarantine_items_to_api(new_items):
+                            queue_pending_quarantine_items(new_items)
+                    save_local_quarantine(st.session_state.quarantine_items)
 
                 data[key] = valid_rows
                 persist_data(data)
 
                 if invalid_rows:
                     st.warning(
-                        f"Imported {len(valid_rows)} {section.lower()} row(s), quarantined {len(invalid_rows)} invalid row(s)."
+                        f"Imported {len(valid_rows)} {section.lower()} row(s), "
+                        f"quarantined {len(invalid_rows)} invalid row(s)."
                     )
+                    preview_errors = [
+                        f"row {idx + 1}: {', '.join(reason_list)}"
+                        for idx, reason_list in enumerate(invalid_reasons[:3])
+                    ]
+                    st.caption("Sample validation errors: " + " | ".join(preview_errors))
                 else:
                     st.success(f"Imported {len(valid_rows)} {section.lower()} row(s).")
             except Exception as exc:
@@ -386,15 +620,9 @@ def render_overview(data: dict[str, list[dict[str, Any]]]) -> None:
     contacts = data["contacts"]
     tasks = data["tasks"]
 
-    revenue = sum(
-        (amt := _safe_float(t.get("amount"))) for t in transactions if (amt is not None and amt > 0)
-    )
-    expenses = sum(
-        (-amt) for t in transactions if (amt := _safe_float(t.get("amount"))) is not None and amt < 0
-    )
-    pipeline = sum(
-        (val := _safe_float(d.get("value"))) for d in deals if d.get("stage") != "Won" and (val is not None)
-    )
+    revenue = sum((amt := _safe_float(t.get("amount"))) for t in transactions if (amt is not None and amt > 0))
+    expenses = sum((-amt) for t in transactions if (amt := _safe_float(t.get("amount"))) is not None and amt < 0)
+    pipeline = sum((val := _safe_float(d.get("value"))) for d in deals if d.get("stage") != "Won" and (val is not None))
     open_tasks = sum(1 for t in tasks if _parse_bool(t.get("done")) is False or (t.get("done") is None))
     active_contacts = sum(1 for c in contacts if c.get("status") == "Active")
 
@@ -514,9 +742,10 @@ def render_tasks(data: dict[str, list[dict[str, Any]]]) -> None:
         if invalid_rows:
             st.session_state.quarantine_items = st.session_state.get("quarantine_items", [])
             new_items = add_quarantine_items("tasks", st.session_state.quarantine_items, invalid_rows, invalid_reasons)
-            save_local_quarantine(st.session_state.quarantine_items)
             if st.session_state.get("backend_mode"):
-                append_quarantine_items_to_api(new_items)
+                if not append_quarantine_items_to_api(new_items):
+                    queue_pending_quarantine_items(new_items)
+            save_local_quarantine(st.session_state.quarantine_items)
             st.warning(f"Saved {len(valid_rows)} task(s). Quarantined {len(invalid_rows)} invalid row(s).")
         else:
             st.success("Tasks saved.")
@@ -583,8 +812,7 @@ def render_quarantine_page(mock_data: dict[str, list[dict[str, Any]]]) -> None:
             merchant = st.text_input("merchant", value=str(row.get("merchant", "")))
             category = st.selectbox("category", ALLOWED_CATEGORIES, index=max(0, ALLOWED_CATEGORIES.index(row.get("category"))) if row.get("category") in ALLOWED_CATEGORIES else 0)
             amount = st.number_input("amount", value=_safe_float(row.get("amount")) or 0.0, step=10.0)
-            submit_label = "Restore transaction"
-            submitted = st.form_submit_button(submit_label)
+            submitted = st.form_submit_button("Restore transaction")
             if submitted:
                 candidate = {"date": tx_dt.isoformat(), "merchant": merchant, "category": category, "amount": float(amount)}
                 normalized, row_reasons = validate_row("transactions", candidate)
@@ -597,7 +825,8 @@ def render_quarantine_page(mock_data: dict[str, list[dict[str, Any]]]) -> None:
                     persist_data(mock_data)
                     if st.session_state.get("backend_mode"):
                         if not delete_quarantine_item_via_api(selected_id):
-                            st.warning("Restored locally, but failed to delete quarantine item on the backend (permissions or connectivity).")
+                            queue_pending_delete(selected_id)
+                            st.warning("Restored locally; backend delete queued for retry.")
                     save_local_quarantine(st.session_state.quarantine_items)
                     st.success("Restored.")
                     st.rerun()
@@ -624,7 +853,8 @@ def render_quarantine_page(mock_data: dict[str, list[dict[str, Any]]]) -> None:
                     persist_data(mock_data)
                     if st.session_state.get("backend_mode"):
                         if not delete_quarantine_item_via_api(selected_id):
-                            st.warning("Restored locally, but failed to delete quarantine item on the backend (permissions or connectivity).")
+                            queue_pending_delete(selected_id)
+                            st.warning("Restored locally; backend delete queued for retry.")
                     save_local_quarantine(st.session_state.quarantine_items)
                     st.success("Restored.")
                     st.rerun()
@@ -651,7 +881,8 @@ def render_quarantine_page(mock_data: dict[str, list[dict[str, Any]]]) -> None:
                     persist_data(mock_data)
                     if st.session_state.get("backend_mode"):
                         if not delete_quarantine_item_via_api(selected_id):
-                            st.warning("Restored locally, but failed to delete quarantine item on the backend (permissions or connectivity).")
+                            queue_pending_delete(selected_id)
+                            st.warning("Restored locally; backend delete queued for retry.")
                     save_local_quarantine(st.session_state.quarantine_items)
                     st.success("Restored.")
                     st.rerun()
@@ -680,7 +911,8 @@ def render_quarantine_page(mock_data: dict[str, list[dict[str, Any]]]) -> None:
                     persist_data(mock_data)
                     if st.session_state.get("backend_mode"):
                         if not delete_quarantine_item_via_api(selected_id):
-                            st.warning("Restored locally, but failed to delete quarantine item on the backend (permissions or connectivity).")
+                            queue_pending_delete(selected_id)
+                            st.warning("Restored locally; backend delete queued for retry.")
                     save_local_quarantine(st.session_state.quarantine_items)
                     st.success("Restored.")
                     st.rerun()
@@ -689,22 +921,85 @@ def render_quarantine_page(mock_data: dict[str, list[dict[str, Any]]]) -> None:
     if st.button("Delete quarantined item permanently", key=f"delete_{selected_id}"):
         if st.session_state.get("backend_mode"):
             if not delete_quarantine_item_via_api(selected_id):
-                st.warning("Failed to delete quarantine item on the backend (permissions or connectivity). Local delete will still proceed.")
+                queue_pending_delete(selected_id)
+                st.warning("Backend delete failed; queued for retry. Local delete will proceed.")
         st.session_state.quarantine_items = [it for it in st.session_state.quarantine_items if it.get("id") != selected_id]
         save_local_quarantine(st.session_state.quarantine_items)
         st.success("Deleted.")
         st.rerun()
 
 
-def main() -> None:
-    st.set_page_config(page_title="FinCRM Dashboard", layout="wide")
-    st.title("FinCRM Dashboard")
-    st.write("Usable mock prototype for finance + CRM workflow.")
+def render_sync_health() -> None:
+    sync_status = st.session_state.get("sync_status")
+    if isinstance(sync_status, dict):
+        level = str(sync_status.get("level", "info"))
+        message = str(sync_status.get("message", ""))
+        timestamp = str(sync_status.get("updated_at", ""))
+        if message:
+            label = f"Sync status ({timestamp}): {message}"
+            if level == "error":
+                st.error(label)
+            elif level == "warning":
+                st.warning(label)
+            elif level == "success":
+                st.success(label)
+            else:
+                st.info(label)
 
+    health = st.session_state.get("sync_health")
+    if isinstance(health, dict):
+        last_success_at = str(health.get("last_success_at", "") or "")
+        last_error_at = str(health.get("last_error_at", "") or "")
+        if last_success_at or last_error_at:
+            summary_parts: list[str] = []
+            if last_success_at:
+                summary_parts.append(f"Last success: {last_success_at}")
+            if last_error_at:
+                summary_parts.append(f"Last issue: {last_error_at}")
+            st.caption(" | ".join(summary_parts))
+
+
+def initialize_page_state() -> None:
     if "backend_mode" not in st.session_state:
         st.session_state.backend_mode = False
     if "api_token" not in st.session_state:
         st.session_state.api_token = ""
+    if "pending_backend_ops" not in st.session_state:
+        st.session_state.pending_backend_ops = {"quarantine_items": [], "delete_ids": []}
+
+
+def initialize_page_data() -> None:
+    if "quarantine_items" not in st.session_state:
+        if st.session_state.backend_mode:
+            remote_quarantine = load_quarantine_from_api()
+            st.session_state.quarantine_items = remote_quarantine if remote_quarantine is not None else load_local_quarantine()
+        else:
+            st.session_state.quarantine_items = load_local_quarantine()
+
+    if "mock_data" not in st.session_state:
+        if st.session_state.backend_mode:
+            remote_data = load_data_from_api()
+            st.session_state.mock_data = remote_data if remote_data is not None else load_local_data()
+        else:
+            st.session_state.mock_data = load_local_data()
+
+
+def reload_from_sources() -> None:
+    if st.session_state.backend_mode:
+        remote_data = load_data_from_api()
+        st.session_state.mock_data = remote_data if remote_data is not None else load_local_data()
+        remote_quarantine = load_quarantine_from_api()
+        st.session_state.quarantine_items = remote_quarantine if remote_quarantine is not None else load_local_quarantine()
+    else:
+        st.session_state.mock_data = load_local_data()
+        st.session_state.quarantine_items = load_local_quarantine()
+
+
+def main() -> None:
+    st.set_page_config(page_title="FinCRM Dashboard", layout="wide")
+    st.title("FinCRM Dashboard")
+    st.write("Usable mock prototype for finance + CRM workflow.")
+    initialize_page_state()
 
     with st.sidebar.expander("Storage Mode", expanded=True):
         backend_toggle = st.toggle("Use FastAPI backend", value=st.session_state.backend_mode)
@@ -715,51 +1010,52 @@ def main() -> None:
             "API token (optional)",
             value=st.session_state.api_token,
             type="password",
-            help="Used for backend sync. If admin tokens are configured on the API, this token should be the admin token to restore/delete quarantined items.",
+            help=(
+                "Used for backend sync. If admin tokens are configured on the API, "
+                "this token should be the admin token to restore/delete quarantined items."
+            ),
         )
         st.caption("Backend URL: http://127.0.0.1:8000")
 
-    sync_status = st.session_state.get("sync_status")
-    if isinstance(sync_status, dict):
-        level = str(sync_status.get("level", "info"))
-        message = str(sync_status.get("message", ""))
-        timestamp = str(sync_status.get("updated_at", ""))
-        if message:
-            if level == "error":
-                st.error(f"Sync status ({timestamp}): {message}")
-            elif level == "warning":
-                st.warning(f"Sync status ({timestamp}): {message}")
-            elif level == "success":
-                st.success(f"Sync status ({timestamp}): {message}")
+        if st.button("Retry last backend operation"):
+            retry_last_sync_action()
+            st.rerun()
 
-    if "quarantine_items" not in st.session_state:
-        if st.session_state.backend_mode:
-            remote_quarantine = load_quarantine_from_api()
-            st.session_state.quarantine_items = remote_quarantine if remote_quarantine else load_local_quarantine()
-        else:
-            st.session_state.quarantine_items = load_local_quarantine()
+    render_sync_health()
+    initialize_page_data()
 
-    if "mock_data" not in st.session_state:
-        if st.session_state.backend_mode:
-            remote_data = load_data_from_api()
-            st.session_state.mock_data = remote_data if remote_data else load_local_data()
-        else:
-            st.session_state.mock_data = load_local_data()
+    pending_ops = get_pending_backend_ops()
+    pending_count = len(pending_ops["quarantine_items"]) + len(pending_ops["delete_ids"])
+    if pending_count > 0:
+        st.info(
+            "Pending backend sync items: "
+            f"{len(pending_ops['quarantine_items'])} quarantine append(s), "
+            f"{len(pending_ops['delete_ids'])} delete(s)."
+        )
+        if st.button("Retry pending backend queue"):
+            if sync_pending_backend_ops():
+                set_sync_status(
+                    "success",
+                    "Pending backend queue synced successfully.",
+                    operation="pending_ops_sync",
+                    clear_retry=True,
+                )
+            else:
+                set_sync_status(
+                    "warning",
+                    "Pending backend queue still has failures.",
+                    operation="pending_ops_sync",
+                    retry_action=SYNC_RETRY_PENDING,
+                )
+            st.rerun()
 
     if st.sidebar.button("Reload Data"):
-        if st.session_state.backend_mode:
-            remote_data = load_data_from_api()
-            st.session_state.mock_data = remote_data if remote_data else load_local_data()
-            remote_quarantine = load_quarantine_from_api()
-            st.session_state.quarantine_items = remote_quarantine if remote_quarantine else load_local_quarantine()
-        else:
-            st.session_state.mock_data = load_local_data()
-            st.session_state.quarantine_items = load_local_quarantine()
+        reload_from_sources()
         st.rerun()
 
     if st.sidebar.button("Save All Now"):
         persist_data(st.session_state.mock_data)
-        save_local_quarantine(st.session_state.quarantine_items)
+        save_local_data_and_quarantine(st.session_state.mock_data, st.session_state.quarantine_items)
         st.sidebar.success("Saved.")
 
     st.sidebar.header("Navigation")

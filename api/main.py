@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 import os
-import json
 from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, status
 from pydantic import BaseModel
 from prism_schema import SECTION_KEYS, normalize_data, validate_dataset, validate_row
+from prism_storage import (
+    file_locks,
+    load_json_unlocked,
+    mutate_json_file,
+    read_json_file,
+    save_json_unlocked,
+    write_json_file,
+)
 
 APP_ROOT = Path(__file__).resolve().parents[1]
 DATA_PATH = APP_ROOT / "data" / "fincrm_data.json"
@@ -42,38 +49,31 @@ def default_data() -> dict[str, list[dict[str, Any]]]:
 
 
 def ensure_data_file() -> None:
-    DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if not DATA_PATH.exists():
-        DATA_PATH.write_text(json.dumps(default_data(), indent=2), encoding="utf-8")
+    read_json_file(DATA_PATH, default_factory=default_data)
 
 
 def read_data() -> dict[str, list[dict[str, Any]]]:
-    ensure_data_file()
-    return normalize_data(json.loads(DATA_PATH.read_text(encoding="utf-8")))
+    payload = read_json_file(DATA_PATH, default_factory=default_data)
+    return normalize_data(payload)
 
 
 def write_data(data: dict[str, list[dict[str, Any]]]) -> None:
-    ensure_data_file()
-    DATA_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    write_json_file(DATA_PATH, data)
 
 
 def ensure_quarantine_file() -> None:
-    QUARANTINE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if not QUARANTINE_PATH.exists():
-        QUARANTINE_PATH.write_text("[]", encoding="utf-8")
+    read_json_file(QUARANTINE_PATH, default_factory=list)
 
 
 def read_quarantine() -> list[dict[str, Any]]:
-    ensure_quarantine_file()
-    parsed = json.loads(QUARANTINE_PATH.read_text(encoding="utf-8"))
+    parsed = read_json_file(QUARANTINE_PATH, default_factory=list)
     if isinstance(parsed, list):
         return [q for q in parsed if isinstance(q, dict)]
     return []
 
 
 def write_quarantine(quarantine_items: list[dict[str, Any]]) -> None:
-    ensure_quarantine_file()
-    QUARANTINE_PATH.write_text(json.dumps(quarantine_items, indent=2), encoding="utf-8")
+    write_json_file(QUARANTINE_PATH, quarantine_items)
 
 
 def _get_role_from_token(x_prism_token: str | None) -> str:
@@ -150,13 +150,18 @@ def quarantine_append(
     payload: QuarantineAppendPayload,
     role: str = Depends(get_admin_role),
 ) -> dict[str, str]:
-    quarantine = read_quarantine()
     appended_count = 0
-    for item in payload.items:
-        if isinstance(item, dict):
-            quarantine.append(item)
-            appended_count += 1
-    write_quarantine(quarantine)
+
+    def mutate(quarantine: Any) -> list[dict[str, Any]]:
+        nonlocal appended_count
+        existing = [q for q in quarantine if isinstance(q, dict)] if isinstance(quarantine, list) else []
+        for item in payload.items:
+            if isinstance(item, dict):
+                existing.append(item)
+                appended_count += 1
+        return existing
+
+    mutate_json_file(QUARANTINE_PATH, default_factory=list, mutator=mutate)
     return {"status": "saved", "count": str(appended_count)}
 
 
@@ -165,9 +170,11 @@ def quarantine_delete(
     item_id: str,
     role: str = Depends(get_admin_role),
 ) -> dict[str, Any]:
-    quarantine = read_quarantine()
-    new_quarantine = [q for q in quarantine if str(q.get("id")) != item_id]
-    write_quarantine(new_quarantine)
+    def mutate(quarantine: Any) -> list[dict[str, Any]]:
+        existing = [q for q in quarantine if isinstance(q, dict)] if isinstance(quarantine, list) else []
+        return [q for q in existing if str(q.get("id")) != item_id]
+
+    mutate_json_file(QUARANTINE_PATH, default_factory=list, mutator=mutate)
     return {"status": "deleted"}
 
 
@@ -176,36 +183,39 @@ def quarantine_restore(
     item_id: str,
     role: str = Depends(get_admin_role),
 ) -> dict[str, Any]:
-    quarantine = read_quarantine()
-    found = next((q for q in quarantine if str(q.get("id")) == item_id), None)
-    if not found:
-        raise HTTPException(status_code=404, detail="Quarantine item not found")
+    with file_locks([DATA_PATH, QUARANTINE_PATH]):
+        quarantine_raw = load_json_unlocked(QUARANTINE_PATH, default_factory=list, initialize_if_missing=True)
+        quarantine = [q for q in quarantine_raw if isinstance(q, dict)] if isinstance(quarantine_raw, list) else []
+        found = next((q for q in quarantine if str(q.get("id")) == item_id), None)
+        if not found:
+            raise HTTPException(status_code=404, detail="Quarantine item not found")
 
-    section = found.get("section")
-    row = found.get("row")
-    if not isinstance(section, str) or not isinstance(row, dict):
-        raise HTTPException(status_code=400, detail="Malformed quarantine item")
-    if section not in SECTION_KEYS:
-        raise HTTPException(status_code=400, detail=f"Unknown section '{section}'")
+        section = found.get("section")
+        row = found.get("row")
+        if not isinstance(section, str) or not isinstance(row, dict):
+            raise HTTPException(status_code=400, detail="Malformed quarantine item")
+        if section not in SECTION_KEYS:
+            raise HTTPException(status_code=400, detail=f"Unknown section '{section}'")
 
-    normalized_row, reasons = validate_row(section, row)
-    if reasons:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "message": "Quarantine row still fails validation",
-                "reasons": reasons,
-            },
-        )
-    assert normalized_row is not None
+        normalized_row, reasons = validate_row(section, row)
+        if reasons:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "Quarantine row still fails validation",
+                    "reasons": reasons,
+                },
+            )
+        assert normalized_row is not None
 
-    data = read_data()
-    if section not in data or not isinstance(data.get(section), list):
-        data[section] = []
-    data[section].append(normalized_row)
+        data_raw = load_json_unlocked(DATA_PATH, default_factory=default_data, initialize_if_missing=True)
+        data = normalize_data(data_raw)
+        if section not in data or not isinstance(data.get(section), list):
+            data[section] = []
+        data[section].append(normalized_row)
 
-    quarantine = [q for q in quarantine if str(q.get("id")) != item_id]
-    write_data(data)
-    write_quarantine(quarantine)
+        remaining_quarantine = [q for q in quarantine if str(q.get("id")) != item_id]
+        save_json_unlocked(DATA_PATH, data)
+        save_json_unlocked(QUARANTINE_PATH, remaining_quarantine)
 
     return {"status": "restored"}
