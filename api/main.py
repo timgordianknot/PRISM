@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,31 @@ class DataPayload(BaseModel):
     contacts: list[dict[str, Any]]
     deals: list[dict[str, Any]]
     tasks: list[dict[str, Any]]
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_name: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temp_file:
+            temp_name = temp_file.name
+            temp_file.write(content)
+        Path(temp_name).replace(path)
+    finally:
+        if temp_name:
+            temp_path = Path(temp_name)
+            if temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
 
 
 def default_data() -> dict[str, list[dict[str, Any]]]:
@@ -43,7 +69,7 @@ def default_data() -> dict[str, list[dict[str, Any]]]:
 def ensure_data_file() -> None:
     DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
     if not DATA_PATH.exists():
-        DATA_PATH.write_text(json.dumps(default_data(), indent=2), encoding="utf-8")
+        _atomic_write_text(DATA_PATH, json.dumps(default_data(), indent=2))
 
 
 def read_data() -> dict[str, list[dict[str, Any]]]:
@@ -75,18 +101,22 @@ def read_data() -> dict[str, list[dict[str, Any]]]:
 
 def write_data(data: dict[str, list[dict[str, Any]]]) -> None:
     ensure_data_file()
-    DATA_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    _atomic_write_text(DATA_PATH, json.dumps(data, indent=2))
 
 
 def ensure_quarantine_file() -> None:
     QUARANTINE_PATH.parent.mkdir(parents=True, exist_ok=True)
     if not QUARANTINE_PATH.exists():
-        QUARANTINE_PATH.write_text("[]", encoding="utf-8")
+        _atomic_write_text(QUARANTINE_PATH, "[]")
 
 
 def read_quarantine() -> list[dict[str, Any]]:
     ensure_quarantine_file()
-    parsed = json.loads(QUARANTINE_PATH.read_text(encoding="utf-8"))
+    try:
+        parsed = json.loads(QUARANTINE_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        write_quarantine([])
+        return []
     if isinstance(parsed, list):
         return [q for q in parsed if isinstance(q, dict)]
     return []
@@ -94,7 +124,7 @@ def read_quarantine() -> list[dict[str, Any]]:
 
 def write_quarantine(quarantine_items: list[dict[str, Any]]) -> None:
     ensure_quarantine_file()
-    QUARANTINE_PATH.write_text(json.dumps(quarantine_items, indent=2), encoding="utf-8")
+    _atomic_write_text(QUARANTINE_PATH, json.dumps(quarantine_items, indent=2))
 
 
 def _get_role_from_token(x_prism_token: str | None) -> str:
@@ -154,7 +184,7 @@ def get_quarantine(role: str = Depends(get_read_role)) -> list[dict[str, Any]]:
 
 
 class QuarantineAppendPayload(BaseModel):
-    items: list[dict[str, Any]]
+    items: list[Any]
 
 
 @app.post("/quarantine/items")
