@@ -8,7 +8,9 @@ Before substantial work, read:
 
 1. `docs/ai/project-context.md` for the stable project overview.
 2. `docs/ai/README.md` for the memory system rules.
-3. Relevant recent handoffs in `docs/ai/handoffs/` if continuing prior work.
+3. `docs/ai/current-state.md` for current priorities and known gaps.
+4. `docs/ai/agent-roles.md` and `docs/ai/workflows.md` when choosing a role or workflow.
+5. Relevant recent handoffs in `docs/ai/handoffs/` if continuing prior work.
 
 For tiny edits, still skim the relevant code and update memory only when something durable is learned.
 

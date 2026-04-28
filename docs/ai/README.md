@@ -6,6 +6,9 @@ Use it to reduce repeated discovery work and make handoffs reliable across sessi
 ## Directory map
 
 - `project-context.md`: stable overview of the product, architecture, commands, data storage, and deployment assumptions.
+- `current-state.md`: short snapshot of current priorities, known gaps, and next useful improvements.
+- `agent-roles.md`: standard roles for planner, builder, QA, librarian, release, architecture, and DevOps agents.
+- `workflows.md`: simple operating flows for features, bugs, QA, releases, documentation cleanup, and deployment planning.
 - `decisions/`: short decision records for meaningful technical choices.
 - `handoffs/`: agent-to-agent notes after substantial work.
 - `runbooks/`: operational procedures for setup, deploys, rollbacks, migrations, and incident response.
