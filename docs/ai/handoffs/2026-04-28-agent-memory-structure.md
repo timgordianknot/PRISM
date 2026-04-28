@@ -23,7 +23,8 @@
 
 ## Commands and tests run
 
-- Pending final verification.
+- `make test`: failed initially because `pytest` was not installed in the cloud environment.
+- `make install && make test`: installed declared dependencies and passed, `11 passed in 0.52s`.
 
 ## Known risks or gaps
 
@@ -37,6 +38,6 @@
 
 ## Links
 
-- PR: Pending
+- PR: Registered for approval
 - Issue/task: N/A
 - Deployment or run: N/A
