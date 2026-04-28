@@ -9,6 +9,7 @@ Start and validate the PRISM FinCRM application on a local development machine o
 - Python 3.12 is preferred because CI uses Python 3.12.
 - Repository dependencies are listed in `requirements.txt`.
 - Optional API permissions use `PRISM_READ_TOKEN` and `PRISM_ADMIN_TOKEN`.
+- Cursor Cloud startup uses `.cursor/environment.json` to run `make install` automatically for remote agents.
 
 ## Steps
 
@@ -16,6 +17,12 @@ Start and validate the PRISM FinCRM application on a local development machine o
 
    ```bash
    make install
+   ```
+
+   If `make` is unavailable locally, use:
+
+   ```bash
+   python -m pip install -r requirements.txt
    ```
 
 2. Run the automated tests:
@@ -61,5 +68,6 @@ Start and validate the PRISM FinCRM application on a local development machine o
 
 - `README.md`
 - `Makefile`
+- `.cursor/environment.json`
 - `api/main.py`
 - `apps/fincrm_dashboard.py`

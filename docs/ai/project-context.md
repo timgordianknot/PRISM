@@ -25,6 +25,7 @@ The application currently focuses on four data sections:
 - `tests/`: pytest coverage for API behavior, dashboard CSV handling, and local data behavior.
 - `data/`: runtime JSON storage when the app or API creates local data files. Treat runtime data as environment-specific.
 - `Makefile`: standard local commands.
+- `.cursor/environment.json`: Cursor Cloud startup hook that runs `make install` so remote agents bootstrap dependencies automatically.
 - `.github/workflows/ci.yml`: GitHub Actions workflow that runs pytest on pushes and pull requests.
 - `docs/ai/`: AI memory system for project context, decisions, handoffs, runbooks, and templates.
 
@@ -45,6 +46,8 @@ python3 -m pytest -q
 uvicorn api.main:app --reload
 streamlit run apps/fincrm_dashboard.py
 ```
+
+If `make` is unavailable on a local Windows machine, use the direct commands above.
 
 ## Runtime architecture
 
@@ -95,6 +98,8 @@ The current GitHub Actions workflow:
 - uses Python 3.12
 - installs `requirements.txt`
 - runs `python -m pytest -q`
+
+Cursor Cloud bootstrap currently uses `.cursor/environment.json` to run `make install` on agent startup.
 
 There is no production deployment workflow documented in this repo yet. If deployment is added, document the environments, required secrets, promotion flow, and rollback procedure in `docs/ai/runbooks/`.
 
