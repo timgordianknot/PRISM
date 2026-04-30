@@ -9,6 +9,7 @@ Use it to reduce repeated discovery work and make handoffs reliable across sessi
 - `current-state.md`: short snapshot of current priorities, known gaps, and next useful improvements.
 - `agent-roles.md`: standard roles for planner, builder, QA, librarian, release, architecture, and DevOps agents.
 - `workflows.md`: simple operating flows for features, bugs, QA, releases, documentation cleanup, and deployment planning.
+- `skills/`: focused checklists for security, GitHub preservation, data stewardship, deployment readiness, and instruction sync.
 - `decisions/`: short decision records for meaningful technical choices.
 - `handoffs/`: agent-to-agent notes after substantial work.
 - `runbooks/`: operational procedures for setup, deploys, rollbacks, migrations, and incident response.
@@ -31,9 +32,10 @@ Do not add new memory notes for every minor edit. If a change is obvious from th
 
 1. Read `AGENTS.md` and `docs/ai/project-context.md` before substantial work.
 2. Check recent handoffs in `docs/ai/handoffs/` when continuing an existing thread of work.
-3. Update the smallest relevant memory file when durable context changes.
-4. Add a decision record for meaningful architecture, deployment, product, or workflow choices.
-5. Add a handoff before finishing substantial work.
+3. Use relevant skill checklists in `docs/ai/skills/` when the task touches security, GitHub preservation, data, deployment, or cross-tool instructions.
+4. Update the smallest relevant memory file when durable context changes.
+5. Add a decision record for meaningful architecture, deployment, product, or workflow choices.
+6. Add a handoff before finishing substantial work.
 
 ## Naming conventions
 

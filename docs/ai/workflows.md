@@ -21,6 +21,7 @@ Use when adding user-visible behavior or a new capability.
 
 1. **Planner**
    - Read `AGENTS.md`, `docs/ai/project-context.md`, and `docs/ai/current-state.md`.
+   - Check relevant skill files in `docs/ai/skills/` for security, data, deployment, preservation, or instruction-sync concerns.
    - Identify affected files and likely tests.
    - Keep the implementation scope narrow.
 2. **Builder**
@@ -46,6 +47,8 @@ Use when behavior is broken, inconsistent, or risky.
 6. Record durable debugging findings in a handoff or investigation note if the bug is non-obvious.
 
 Use `docs/ai/templates/investigation-template.md` for deeper bugs.
+Use `docs/ai/skills/security-and-secrets.md` for auth, token, permission, or secret-related bugs.
+Use `docs/ai/skills/data-stewardship.md` for persistence, CSV, schema, or quarantine bugs.
 
 ## Documentation cleanup workflow
 
@@ -55,8 +58,9 @@ Use when improving memory, runbooks, README content, or release notes.
 2. Merge duplicated ideas instead of creating parallel sources of truth.
 3. Keep stable facts in `project-context.md`.
 4. Keep current priorities and short-lived gaps in `current-state.md`.
-5. Use `handoffs/` for session-specific work notes.
-6. Run tests only when code or executable examples changed; otherwise review docs for links, formatting, and accuracy.
+5. Use `docs/ai/skills/instruction-sync.md` when aligning ChatGPT, Codex, Cursor, or repo instructions.
+6. Use `handoffs/` for session-specific work notes.
+7. Run tests only when code or executable examples changed; otherwise review docs for links, formatting, and accuracy.
 
 ## Release preparation workflow
 
@@ -64,13 +68,14 @@ Use when preparing to merge, deploy, or summarize a branch.
 
 1. Review commits and changed files.
 2. Run `make test`.
-3. Check whether memory docs, runbooks, or release notes need updates.
-4. Summarize:
+3. Use `docs/ai/skills/github-preservation.md` to confirm commits, branch state, and durable documentation.
+4. Check whether memory docs, runbooks, or release notes need updates.
+5. Summarize:
    - changes shipped
    - verification performed
    - known risks
    - rollback or recovery notes
-5. Use `docs/ai/templates/release-notes-template.md` if a release note is needed.
+6. Use `docs/ai/templates/release-notes-template.md` if a release note is needed.
 
 ## Environment or CI workflow
 
@@ -78,9 +83,11 @@ Use when changing dependencies, GitHub Actions, deployment, Terraform, or runtim
 
 1. Read `.github/workflows/ci.yml`, `Makefile`, `requirements.txt`, and relevant runbooks.
 2. Prefer small, observable changes.
-3. Document new commands, required secrets, and expected environment variables.
-4. Add or update a runbook for setup, deploy, rollback, or incident response.
-5. Run `make test` and any CI-equivalent checks available locally.
+3. Use `docs/ai/skills/deployment-readiness.md` before adding deploy or environment automation.
+4. Use `docs/ai/skills/security-and-secrets.md` before documenting secrets or permissions.
+5. Document new commands, required secrets, and expected environment variables.
+6. Add or update a runbook for setup, deploy, rollback, or incident response.
+7. Run `make test` and any CI-equivalent checks available locally.
 
 ## Completion checklist
 

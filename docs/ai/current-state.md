@@ -22,6 +22,7 @@ PRISM currently has:
 - Preserve durable context for agents and subagents in Markdown.
 - Avoid adding process that is heavier than the current prototype needs.
 - Add deployment, release, and infrastructure docs when those flows become concrete.
+- Use focused skills in `docs/ai/skills/` for security, preservation, data, deployment, and instruction-sync checks.
 
 ## Recommended agent loop
 
@@ -43,11 +44,13 @@ For operational changes, include the DevOps Agent. For releases, include the Rel
 - No Terraform configuration yet.
 - No formal dev/prod branch promotion workflow yet.
 - No documented secrets management process for deployed environments yet.
+- No formal cross-tool instruction sync cadence yet.
 
 ## Next good improvements
 
 - Add deployment and rollback runbooks after hosting is chosen.
 - Add a decision record for branch strategy once dev/prod flow is finalized.
 - Add CI/CD expansion notes if linting, formatting, type checks, security scans, or deploy jobs are introduced.
+- Use the security, GitHub preservation, data stewardship, deployment readiness, and instruction sync skills as lightweight checklists during relevant work.
 - Keep handoffs current after substantial agent work.
 

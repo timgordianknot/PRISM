@@ -10,7 +10,8 @@ Before substantial work, read:
 2. `docs/ai/README.md` for the memory system rules.
 3. `docs/ai/current-state.md` for current priorities and known gaps.
 4. `docs/ai/agent-roles.md` and `docs/ai/workflows.md` when choosing a role or workflow.
-5. Relevant recent handoffs in `docs/ai/handoffs/` if continuing prior work.
+5. Relevant skill checklists in `docs/ai/skills/` for security, GitHub preservation, data, deployment, or instruction-sync work.
+6. Relevant recent handoffs in `docs/ai/handoffs/` if continuing prior work.
 
 For tiny edits, still skim the relevant code and update memory only when something durable is learned.
 
@@ -32,6 +33,16 @@ Update AI memory when work changes or discovers durable project knowledge:
 - security, permissions, or data durability assumptions
 
 Do not create memory files for routine typo fixes, small copy edits, or obvious local changes.
+
+## Skill checklists
+
+Use the smallest relevant skill checklist when a task touches a specialized concern:
+
+- `docs/ai/skills/security-and-secrets.md`: tokens, auth, secrets, permissions, or sensitive data.
+- `docs/ai/skills/github-preservation.md`: commits, branches, PRs, backups, curriculum, or durable docs.
+- `docs/ai/skills/data-stewardship.md`: JSON storage, CSV import/export, validation, schema, or quarantine behavior.
+- `docs/ai/skills/deployment-readiness.md`: hosting, environments, CI/CD deploys, rollback, or Terraform readiness.
+- `docs/ai/skills/instruction-sync.md`: Cursor, Codex, ChatGPT, AGENTS files, rules, or cross-tool instruction drift.
 
 ## Handoffs
 

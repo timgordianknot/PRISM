@@ -209,3 +209,14 @@ Planner -> Builder -> QA -> Librarian
 - keep runbooks current
 - update `docs/ai/project-context.md` for CI/CD or deployment changes
 - add decision records for branch strategy, deployment model, or infrastructure choices
+
+## Skill checklists
+
+Roles can pull in focused skills when a task crosses a risk area:
+
+- `docs/ai/skills/security-and-secrets.md`: auth, tokens, permissions, secret handling, and sensitive data.
+- `docs/ai/skills/github-preservation.md`: commits, pushes, PRs, backups, and durable GitHub records.
+- `docs/ai/skills/data-stewardship.md`: JSON persistence, CSV validation, quarantine, schemas, and migrations.
+- `docs/ai/skills/deployment-readiness.md`: dev/prod readiness, deployment, rollback, health checks, and infrastructure.
+- `docs/ai/skills/instruction-sync.md`: keeping ChatGPT, Codex, Cursor, and repo Markdown instructions aligned.
+
